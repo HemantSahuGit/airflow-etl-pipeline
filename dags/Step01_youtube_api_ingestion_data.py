@@ -25,10 +25,12 @@ default_args = {
     catchup=False,
     start_date=datetime(2024, 1, 1),
     doc_md="""
-    ## YouTube Data API Ingestion (Bronze Layer)
+    ## YouTube Data API Ingestion (Bronze Layer - Staging)
     
     Pulls trending videos from the YouTube Data API for each configured region
-    and writes raw JSON responses to PostgreSQL (replaces S3 storage).
+    and writes raw JSON responses to PostgreSQL staging tables.
+    
+    Bronze layer allows duplicates. Deduplication happens in Silver layer.
     
     Configuration via Airflow Variables:
     - YOUTUBE_API_KEY: Google API key with YouTube Data API v3 enabled
@@ -43,12 +45,16 @@ def youtube_bronze_layer_pipeline():
     """
     
     # ========================================================================
-    # TASK 1: Setup - Create Bronze Layer Tables
+    # TASK 1: Setup - Create Bronze Layer Tables (Staging - No Constraints)
     # ========================================================================
     @task(task_id='create_bronze_tables')
     def create_bronze_tables():
         """
-        Create raw data tables in PostgreSQL for Bronze layer if they don't exist
+        Create raw data tables in PostgreSQL for Bronze layer (Staging).
+        
+        These tables allow duplicates for flexibility in data ingestion.
+        Deduplication will happen in the Silver layer.
+        No PRIMARY KEY or UNIQUE constraints.
         """
         try:
             postgres_conn_id = Variable.get('POSTGRES_CONN_ID', 'postgres_local')
@@ -57,60 +63,74 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
-            logger.info("Creating Bronze layer tables...")
+            logger.info("Creating Bronze layer staging tables (no constraints)...")
             
-            # Table for raw trending videos data
+            # ────────────────────────────────────────────────────────────────
+            # Table for raw trending videos data (NO PRIMARY KEY, NO UNIQUE)
+            # ────────────────────────────────────────────────────────────────
             create_raw_videos_table = """
-            CREATE TABLE IF NOT EXISTS youtube_bronze_trending_videos (
-                id SERIAL PRIMARY KEY,
+            DROP TABLE IF EXISTS youtube_bronze_trending_videos CASCADE;
+            
+            CREATE TABLE youtube_bronze_trending_videos (
                 ingestion_id VARCHAR(50) NOT NULL,
                 region VARCHAR(10) NOT NULL,
                 ingestion_timestamp TIMESTAMP NOT NULL,
                 raw_json JSONB NOT NULL,
                 video_count INT,
                 source VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ingestion_id, region)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
-            CREATE INDEX IF NOT EXISTS idx_region_timestamp 
+            CREATE INDEX idx_region_timestamp 
             ON youtube_bronze_trending_videos(region, ingestion_timestamp DESC);
-            CREATE INDEX IF NOT EXISTS idx_ingestion_id 
+            CREATE INDEX idx_ingestion_id 
             ON youtube_bronze_trending_videos(ingestion_id);
+            CREATE INDEX idx_created_at 
+            ON youtube_bronze_trending_videos(created_at DESC);
             """
             
             cursor.execute(create_raw_videos_table)
             conn.commit()
             
-            logger.info("Raw videos table created/verified")
+            logger.info("✓ Raw videos staging table created (allows duplicates)")
             
-            # Table for raw category reference data
+            # ────────────────────────────────────────────────────────────────
+            # Table for raw category reference data (NO PRIMARY KEY, NO UNIQUE)
+            # ────────────────────────────────────────────────────────────────
             create_categories_table = """
-            CREATE TABLE IF NOT EXISTS youtube_bronze_categories (
-                id SERIAL PRIMARY KEY,
+            DROP TABLE IF EXISTS youtube_bronze_categories CASCADE;
+            
+            CREATE TABLE youtube_bronze_categories (
                 ingestion_id VARCHAR(50) NOT NULL,
                 region VARCHAR(10) NOT NULL,
                 ingestion_timestamp TIMESTAMP NOT NULL,
                 raw_json JSONB NOT NULL,
                 source VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ingestion_id, region)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
-            CREATE INDEX IF NOT EXISTS idx_categories_region_timestamp 
+            CREATE INDEX idx_categories_region_timestamp 
             ON youtube_bronze_categories(region, ingestion_timestamp DESC);
+            CREATE INDEX idx_categories_ingestion_id 
+            ON youtube_bronze_categories(ingestion_id);
+            CREATE INDEX idx_categories_created_at 
+            ON youtube_bronze_categories(created_at DESC);
             """
             
             cursor.execute(create_categories_table)
             conn.commit()
             
-            logger.info("Categories table created/verified")
+            logger.info("✓ Categories staging table created (allows duplicates)")
             
+            # ────────────────────────────────────────────────────────────────
             # Audit/metadata table
+            # ────────────────────────────────────────────────────────────────
             create_audit_table = """
-            CREATE TABLE IF NOT EXISTS youtube_ingestion_audit (
+            DROP TABLE IF EXISTS youtube_ingestion_audit CASCADE;
+            
+            CREATE TABLE youtube_ingestion_audit (
                 id SERIAL PRIMARY KEY,
-                ingestion_id VARCHAR(50) NOT NULL UNIQUE,
+                ingestion_id VARCHAR(50) NOT NULL,
                 started_at TIMESTAMP NOT NULL,
                 completed_at TIMESTAMP,
                 total_regions INT,
@@ -121,16 +141,18 @@ def youtube_bronze_layer_pipeline():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
-            CREATE INDEX IF NOT EXISTS idx_audit_ingestion_id 
+            CREATE INDEX idx_audit_ingestion_id 
             ON youtube_ingestion_audit(ingestion_id);
-            CREATE INDEX IF NOT EXISTS idx_audit_status 
+            CREATE INDEX idx_audit_status 
             ON youtube_ingestion_audit(status);
+            CREATE INDEX idx_audit_created_at 
+            ON youtube_ingestion_audit(created_at DESC);
             """
             
             cursor.execute(create_audit_table)
             conn.commit()
             
-            logger.info("Audit table created/verified")
+            logger.info("✓ Audit table created/verified")
             cursor.close()
             conn.close()
             
@@ -196,10 +218,10 @@ def youtube_bronze_layer_pipeline():
                         'status': 'success'
                     }
                     
-                    logger.info(f"  Fetched {video_count} videos from {region}")
+                    logger.info(f"  ✓ Fetched {video_count} videos from {region}")
                 
                 except Exception as e:
-                    logger.error(f"  Error fetching {region}: {str(e)}")
+                    logger.error(f"  ✗ Error fetching {region}: {str(e)}")
                     regional_data[region] = {
                         'status': 'failed',
                         'error': str(e)
@@ -272,10 +294,10 @@ def youtube_bronze_layer_pipeline():
                         'status': 'success'
                     }
                     
-                    logger.info(f"  Fetched categories for {region}")
+                    logger.info(f"  ✓ Fetched categories for {region}")
                 
                 except Exception as e:
-                    logger.error(f"  Error fetching categories for {region}: {str(e)}")
+                    logger.error(f"  ✗ Error fetching categories for {region}: {str(e)}")
                     category_data[region] = {
                         'status': 'failed',
                         'error': str(e)
@@ -295,12 +317,15 @@ def youtube_bronze_layer_pipeline():
             raise
 
     # ========================================================================
-    # TASK 4: Load Trending Videos to PostgreSQL
+    # TASK 4: Load Trending Videos to PostgreSQL (Simple Insert - No Conflict)
     # ========================================================================
     @task(task_id='load_trending_to_postgres')
     def load_trending_to_postgres(trending_result):
         """
-        Insert raw trending videos data into PostgreSQL Bronze layer
+        Insert raw trending videos data into PostgreSQL Bronze layer (Staging).
+        
+        Simple INSERT without ON CONFLICT - allows duplicates.
+        Deduplication happens in Silver layer.
         """
         try:
             postgres_conn_id = Variable.get('POSTGRES_CONN_ID', 'postgres_local')
@@ -311,14 +336,11 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
+            # ✅ SIMPLE INSERT - NO ON CONFLICT
             insert_sql = """
             INSERT INTO youtube_bronze_trending_videos 
             (ingestion_id, region, ingestion_timestamp, raw_json, video_count, source)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (ingestion_id, region) DO UPDATE SET
-                raw_json = EXCLUDED.raw_json,
-                video_count = EXCLUDED.video_count,
-                ingestion_timestamp = EXCLUDED.ingestion_timestamp;
+            VALUES (%s, %s, %s, %s, %s, %s);
             """
             
             records_loaded = 0
@@ -337,13 +359,13 @@ def youtube_bronze_layer_pipeline():
                     ))
                     
                     records_loaded += 1
-                    logger.info(f"Loaded trending data for {region}")
+                    logger.info(f"✓ Loaded trending data for {region}")
             
             conn.commit()
             cursor.close()
             conn.close()
             
-            logger.info(f"Successfully loaded {records_loaded} trending video datasets")
+            logger.info(f"✓ Successfully loaded {records_loaded} trending video datasets to staging")
             
             return {
                 'records_loaded': records_loaded,
@@ -355,12 +377,15 @@ def youtube_bronze_layer_pipeline():
             raise
 
     # ========================================================================
-    # TASK 5: Load Categories to PostgreSQL
+    # TASK 5: Load Categories to PostgreSQL (Simple Insert - No Conflict)
     # ========================================================================
     @task(task_id='load_categories_to_postgres')
     def load_categories_to_postgres(category_result):
         """
-        Insert raw category reference data into PostgreSQL Bronze layer
+        Insert raw category reference data into PostgreSQL Bronze layer (Staging).
+        
+        Simple INSERT without ON CONFLICT - allows duplicates.
+        Deduplication happens in Silver layer.
         """
         try:
             postgres_conn_id = Variable.get('POSTGRES_CONN_ID', 'postgres_local')
@@ -371,13 +396,11 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
+            # ✅ SIMPLE INSERT - NO ON CONFLICT
             insert_sql = """
             INSERT INTO youtube_bronze_categories 
             (ingestion_id, region, ingestion_timestamp, raw_json, source)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (ingestion_id, region) DO UPDATE SET
-                raw_json = EXCLUDED.raw_json,
-                ingestion_timestamp = EXCLUDED.ingestion_timestamp;
+            VALUES (%s, %s, %s, %s, %s);
             """
             
             records_loaded = 0
@@ -395,13 +418,13 @@ def youtube_bronze_layer_pipeline():
                     ))
                     
                     records_loaded += 1
-                    logger.info(f"Loaded categories for {region}")
+                    logger.info(f"✓ Loaded categories for {region}")
             
             conn.commit()
             cursor.close()
             conn.close()
             
-            logger.info(f"Successfully loaded {records_loaded} category datasets")
+            logger.info(f"✓ Successfully loaded {records_loaded} category datasets to staging")
             
             return {
                 'records_loaded': records_loaded,
@@ -460,11 +483,18 @@ def youtube_bronze_layer_pipeline():
             conn.close()
             
             summary = (
-                f"✓ Ingestion {ingestion_id} complete. "
-                f"Success: {success_regions}/{total_regions} regions. "
-                f"Failed: {failed_regions}. "
-                f"Trending datasets loaded: {trending_load.get('records_loaded', 0)}. "
-                f"Category datasets loaded: {category_load.get('records_loaded', 0)}."
+                f"\n{'='*70}\n"
+                f"✓ YOUTUBE BRONZE LAYER INGESTION COMPLETE\n"
+                f"{'='*70}\n"
+                f"  Ingestion ID:     {ingestion_id}\n"
+                f"  Timestamp:        {ingestion_timestamp}\n"
+                f"  Total Regions:    {total_regions}\n"
+                f"  Success:          {success_regions}/{total_regions}\n"
+                f"  Failed:           {failed_regions}\n"
+                f"  Trending Loaded:  {trending_load.get('records_loaded', 0)}\n"
+                f"  Categories Loaded: {category_load.get('records_loaded', 0)}\n"
+                f"  Status:           {'SUCCESS' if failed_regions == 0 else 'PARTIAL_SUCCESS'}\n"
+                f"{'='*70}"
             )
             
             logger.info(summary)
