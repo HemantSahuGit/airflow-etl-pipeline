@@ -105,6 +105,23 @@ services:
       start_period: 5s
     restart: always
 
+  postgres-data:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: project
+      POSTGRES_PASSWORD: project
+      POSTGRES_DB: project_db
+    volumes:
+      - postgres-data-volume:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "project"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
     # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
@@ -337,3 +354,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  postgres-data-volume:
