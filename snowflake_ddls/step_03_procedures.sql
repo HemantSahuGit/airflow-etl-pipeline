@@ -128,3 +128,104 @@ BEGIN
             RETURN 'FAILED: ' || SQLERRM;
     END;
 END;
+
+
+-- =============================================================
+-- Stored Procedure: Merge YouTube categories from stream to silver
+-- =============================================================
+CREATE OR REPLACE PROCEDURE AIRFLOW_ETL.SILVER.SP_MERGE_YOUTUBE_CATEGORIES()
+RETURNS STRING
+LANGUAGE SQL
+COMMENT = 'Consumes new rows from the bronze categories stream and merges flattened data into the silver layer. Matches on category_id + region + ingestion_id. Logs execution results to ETL_PROCESS_LOG.'
+EXECUTE AS CALLER
+AS
+BEGIN
+    LET v_start TIMESTAMP := CURRENT_TIMESTAMP();
+    LET v_rows_inserted INTEGER := 0;
+
+    -- Log start
+    INSERT INTO AIRFLOW_ETL.SILVER.ETL_PROCESS_LOG
+        (procedure_name, status, rows_inserted, rows_updated, error_message, started_at, completed_at)
+    VALUES
+        ('SP_MERGE_YOUTUBE_CATEGORIES', 'RUNNING', 0, 0, NULL, :v_start, NULL);
+
+    BEGIN
+        -- Check if stream has data before processing
+        IF (NOT SYSTEM$STREAM_HAS_DATA('AIRFLOW_ETL.BRONZE.YOUTUBE_CATEGORIES_STREAM')) THEN
+            UPDATE AIRFLOW_ETL.SILVER.ETL_PROCESS_LOG
+            SET status = 'SUCCESS',
+                rows_inserted = 0,
+                error_message = 'No new data in stream',
+                completed_at = CURRENT_TIMESTAMP()
+            WHERE procedure_name = 'SP_MERGE_YOUTUBE_CATEGORIES'
+              AND status = 'RUNNING'
+              AND started_at = :v_start;
+
+            RETURN 'SUCCESS: No new data in stream. Skipped.';
+        END IF;
+
+        MERGE INTO AIRFLOW_ETL.SILVER.YOUTUBE_CATEGORIES AS tgt
+        USING (
+            SELECT
+                "ingestion_id" AS ingestion_id,
+                "region" AS region,
+                f.value:id::integer AS category_id,
+                f.value:etag::string AS category_etag,
+                f.value:kind::string AS category_kind,
+                f.value:snippet:title::string AS category_title,
+                f.value:snippet:channelId::string AS category_channel_id,
+                f.value:snippet:assignable::boolean AS category_assignable,
+                parse_json("raw_json"::variant):etag::string AS search_etag,
+                parse_json("raw_json"::variant):kind::string AS response_type,
+                parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp AS ingestion_time
+            FROM AIRFLOW_ETL.BRONZE.YOUTUBE_CATEGORIES_STREAM,
+            LATERAL FLATTEN(parse_json("raw_json"::variant):items) AS f
+        ) AS src
+        ON  tgt.category_id = src.category_id
+        AND tgt.region = src.region
+        AND tgt.ingestion_id = src.ingestion_id
+        WHEN MATCHED THEN UPDATE SET
+            tgt.category_etag       = src.category_etag,
+            tgt.category_kind       = src.category_kind,
+            tgt.category_title      = src.category_title,
+            tgt.category_channel_id = src.category_channel_id,
+            tgt.category_assignable = src.category_assignable,
+            tgt.search_etag         = src.search_etag,
+            tgt.response_type       = src.response_type,
+            tgt.ingestion_time      = src.ingestion_time
+        WHEN NOT MATCHED THEN INSERT (
+            ingestion_id, region, category_id, category_etag, category_kind,
+            category_title, category_channel_id, category_assignable,
+            search_etag, response_type, ingestion_time
+        ) VALUES (
+            src.ingestion_id, src.region, src.category_id, src.category_etag, src.category_kind,
+            src.category_title, src.category_channel_id, src.category_assignable,
+            src.search_etag, src.response_type, src.ingestion_time
+        );
+
+        v_rows_inserted := SQLROWCOUNT;
+
+        -- Update log with success
+        UPDATE AIRFLOW_ETL.SILVER.ETL_PROCESS_LOG
+        SET status = 'SUCCESS',
+            rows_inserted = :v_rows_inserted,
+            completed_at = CURRENT_TIMESTAMP()
+        WHERE procedure_name = 'SP_MERGE_YOUTUBE_CATEGORIES'
+          AND status = 'RUNNING'
+          AND started_at = :v_start;
+
+        RETURN 'SUCCESS: Merged ' || :v_rows_inserted || ' rows from stream.';
+
+    EXCEPTION
+        WHEN OTHER THEN
+            UPDATE AIRFLOW_ETL.SILVER.ETL_PROCESS_LOG
+            SET status = 'FAILED',
+                error_message = SQLERRM,
+                completed_at = CURRENT_TIMESTAMP()
+            WHERE procedure_name = 'SP_MERGE_YOUTUBE_CATEGORIES'
+              AND status = 'RUNNING'
+              AND started_at = :v_start;
+
+            RETURN 'FAILED: ' || SQLERRM;
+    END;
+END;

@@ -35,6 +35,24 @@ CREATE TABLE IF NOT EXISTS AIRFLOW_ETL.SILVER.YOUTUBE_TRENDING_VIDEOS (
 COMMENT = 'Silver layer table containing flattened and typed YouTube trending video data. Sourced from bronze layer raw JSON responses via LATERAL FLATTEN on the items array. Each row represents one trending video per region per ingestion batch.';
 
 -- =============================================================
+-- DDL: Silver layer table for YouTube categories
+-- =============================================================
+CREATE TABLE IF NOT EXISTS AIRFLOW_ETL.SILVER.YOUTUBE_CATEGORIES (
+    ingestion_id        STRING    COMMENT 'Unique identifier for each data ingestion batch from the Airflow pipeline',
+    region              STRING    COMMENT 'ISO 3166-1 alpha-2 country code representing the region for the category list',
+    category_id         INTEGER   COMMENT 'YouTube category ID (numeric identifier for video categories)',
+    category_etag       STRING    COMMENT 'Entity tag for cache validation of the category resource',
+    category_kind       STRING    COMMENT 'YouTube API resource type identifier (e.g., youtube#videoCategory)',
+    category_title      STRING    COMMENT 'Display name of the category (e.g., Music, Entertainment, Sports)',
+    category_channel_id STRING    COMMENT 'Channel ID associated with the category',
+    category_assignable BOOLEAN   COMMENT 'Whether videos can be assigned to this category by uploaders',
+    search_etag         STRING    COMMENT 'Entity tag of the top-level YouTube API response for cache validation',
+    response_type       STRING    COMMENT 'YouTube API response resource type (e.g., youtube#videoCategoryListResponse)',
+    ingestion_time      TIMESTAMP COMMENT 'Timestamp when the record was ingested by the Airflow pipeline'
+)
+COMMENT = 'Silver layer table containing flattened YouTube video categories. Sourced from bronze layer raw JSON responses via LATERAL FLATTEN on the items array. Each row represents one category per region per ingestion batch.';
+
+-- =============================================================
 -- DDL: ETL log table for tracking procedure executions
 -- =============================================================
 CREATE TABLE IF NOT EXISTS AIRFLOW_ETL.SILVER.ETL_PROCESS_LOG (
