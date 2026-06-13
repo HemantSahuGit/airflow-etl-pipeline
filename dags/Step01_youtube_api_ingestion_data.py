@@ -69,7 +69,7 @@ def youtube_bronze_layer_pipeline():
             # Table for raw trending videos data (NO PRIMARY KEY, NO UNIQUE)
             # ────────────────────────────────────────────────────────────────
             create_raw_videos_table = """
-            DROP TABLE IF EXISTS youtube_bronze_trending_videos CASCADE;
+            --DROP TABLE IF EXISTS youtube_bronze_trending_videos CASCADE;
             
             CREATE TABLE youtube_bronze_trending_videos (
                 ingestion_id VARCHAR(50) NOT NULL,
@@ -98,7 +98,7 @@ def youtube_bronze_layer_pipeline():
             # Table for raw category reference data (NO PRIMARY KEY, NO UNIQUE)
             # ────────────────────────────────────────────────────────────────
             create_categories_table = """
-            DROP TABLE IF EXISTS youtube_bronze_categories CASCADE;
+            --DROP TABLE IF EXISTS youtube_bronze_categories CASCADE;
             
             CREATE TABLE youtube_bronze_categories (
                 ingestion_id VARCHAR(50) NOT NULL,
@@ -126,7 +126,7 @@ def youtube_bronze_layer_pipeline():
             # Audit/metadata table
             # ────────────────────────────────────────────────────────────────
             create_audit_table = """
-            DROP TABLE IF EXISTS youtube_ingestion_audit CASCADE;
+            --DROP TABLE IF EXISTS youtube_ingestion_audit CASCADE;
             
             CREATE TABLE youtube_ingestion_audit (
                 id SERIAL PRIMARY KEY,
