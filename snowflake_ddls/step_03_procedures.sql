@@ -4,7 +4,7 @@
 CREATE OR REPLACE PROCEDURE AIRFLOW_ETL.SILVER.SP_MERGE_YOUTUBE_TRENDING_VIDEOS()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = 'Consumes new rows from the bronze stream and merges flattened YouTube trending video data into the silver layer. Matches on song_id + region + ingestion_id. Logs execution results to ETL_PROCESS_LOG.'
+COMMENT = 'Consumes new rows from the bronze stream, deduplicates by song_id (keeping latest by ingestion_timestamp via ROW_NUMBER), and merges into the silver layer. Logs execution results to ETL_PROCESS_LOG.'
 EXECUTE AS CALLER
 AS
 BEGIN
@@ -34,38 +34,42 @@ BEGIN
 
         MERGE INTO AIRFLOW_ETL.SILVER.YOUTUBE_TRENDING_VIDEOS AS tgt
         USING (
-            SELECT
-                "ingestion_id" AS ingestion_id,
-                "region" AS region,
-                f.value:id::string AS song_id,
-                f.value:etag::string AS song_etag,
-                f.value:kind::string AS song_kind,
-                f.value:snippet:tags::string AS song_tags,
-                f.value:snippet:title::string AS title,
-                f.value:snippet:channelId::string AS channel_id,
-                f.value:snippet:categoryId::string AS category_id,
-                f.value:snippet:thumbnails::string AS thumbnail_details,
-                f.value:snippet:description::string AS song_desc,
-                f.value:snippet:publishedAt::timestamp AS song_published_dt,
-                f.value:snippet:channelTitle::string AS channel_title,
-                f.value:snippet:defaultAudioLanguage::string AS song_default_language,
-                f.value:statistics:likeCount::integer AS song_like_count,
-                f.value:statistics:viewCount::integer AS song_view_count,
-                f.value:statistics:commentCount::integer AS song_comment_count,
-                f.value:statistics:favoriteCount::integer AS song_favourite_count,
-                f.value:contentDetails:duration::string AS song_duration,
-                f.value:contentDetails:dimension::string AS song_dimension,
-                f.value:contentDetails:definition::string AS song_definition,
-                parse_json("raw_json"::variant):etag::string AS search_etag,
-                parse_json("raw_json"::variant):kind::string AS response_type,
-                parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp AS ingestion_time
-            FROM AIRFLOW_ETL.BRONZE.YOUTUBE_TRENDING_VIDEOS_STREAM,
-            LATERAL FLATTEN(parse_json("raw_json"::variant):items) AS f
+            SELECT * FROM (
+                SELECT
+                    "ingestion_id" AS ingestion_id,
+                    "region" AS region,
+                    f.value:id::string AS song_id,
+                    f.value:etag::string AS song_etag,
+                    f.value:kind::string AS song_kind,
+                    f.value:snippet:tags::string AS song_tags,
+                    f.value:snippet:title::string AS title,
+                    f.value:snippet:channelId::string AS channel_id,
+                    f.value:snippet:categoryId::string AS category_id,
+                    f.value:snippet:thumbnails::string AS thumbnail_details,
+                    f.value:snippet:description::string AS song_desc,
+                    f.value:snippet:publishedAt::timestamp AS song_published_dt,
+                    f.value:snippet:channelTitle::string AS channel_title,
+                    f.value:snippet:defaultAudioLanguage::string AS song_default_language,
+                    f.value:statistics:likeCount::integer AS song_like_count,
+                    f.value:statistics:viewCount::integer AS song_view_count,
+                    f.value:statistics:commentCount::integer AS song_comment_count,
+                    f.value:statistics:favoriteCount::integer AS song_favourite_count,
+                    f.value:contentDetails:duration::string AS song_duration,
+                    f.value:contentDetails:dimension::string AS song_dimension,
+                    f.value:contentDetails:definition::string AS song_definition,
+                    parse_json("raw_json"::variant):etag::string AS search_etag,
+                    parse_json("raw_json"::variant):kind::string AS response_type,
+                    parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp AS ingestion_time,
+                    ROW_NUMBER() OVER (PARTITION BY f.value:id::string ORDER BY parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp DESC) AS rn
+                FROM AIRFLOW_ETL.BRONZE.YOUTUBE_TRENDING_VIDEOS_STREAM,
+                LATERAL FLATTEN(parse_json("raw_json"::variant):items) AS f
+            )
+            WHERE rn = 1
         ) AS src
         ON  tgt.song_id = src.song_id
-        AND tgt.region = src.region
-        AND tgt.ingestion_id = src.ingestion_id
         WHEN MATCHED THEN UPDATE SET
+            tgt.ingestion_id         = src.ingestion_id,
+            tgt.region               = src.region,
             tgt.song_etag            = src.song_etag,
             tgt.song_kind            = src.song_kind,
             tgt.song_tags            = src.song_tags,
@@ -136,7 +140,7 @@ END;
 CREATE OR REPLACE PROCEDURE AIRFLOW_ETL.SILVER.SP_MERGE_YOUTUBE_CATEGORIES()
 RETURNS STRING
 LANGUAGE SQL
-COMMENT = 'Consumes new rows from the bronze categories stream and merges flattened data into the silver layer. Matches on category_id + region + ingestion_id. Logs execution results to ETL_PROCESS_LOG.'
+COMMENT = 'Consumes new rows from the bronze categories stream, deduplicates by category_id (keeping latest by ingestion_timestamp via ROW_NUMBER), and merges into the silver layer. Logs execution results to ETL_PROCESS_LOG.'
 EXECUTE AS CALLER
 AS
 BEGIN
@@ -166,25 +170,29 @@ BEGIN
 
         MERGE INTO AIRFLOW_ETL.SILVER.YOUTUBE_CATEGORIES AS tgt
         USING (
-            SELECT
-                "ingestion_id" AS ingestion_id,
-                "region" AS region,
-                f.value:id::integer AS category_id,
-                f.value:etag::string AS category_etag,
-                f.value:kind::string AS category_kind,
-                f.value:snippet:title::string AS category_title,
-                f.value:snippet:channelId::string AS category_channel_id,
-                f.value:snippet:assignable::boolean AS category_assignable,
-                parse_json("raw_json"::variant):etag::string AS search_etag,
-                parse_json("raw_json"::variant):kind::string AS response_type,
-                parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp AS ingestion_time
-            FROM AIRFLOW_ETL.BRONZE.YOUTUBE_CATEGORIES_STREAM,
-            LATERAL FLATTEN(parse_json("raw_json"::variant):items) AS f
+            SELECT * FROM (
+                SELECT
+                    "ingestion_id" AS ingestion_id,
+                    "region" AS region,
+                    f.value:id::integer AS category_id,
+                    f.value:etag::string AS category_etag,
+                    f.value:kind::string AS category_kind,
+                    f.value:snippet:title::string AS category_title,
+                    f.value:snippet:channelId::string AS category_channel_id,
+                    f.value:snippet:assignable::boolean AS category_assignable,
+                    parse_json("raw_json"::variant):etag::string AS search_etag,
+                    parse_json("raw_json"::variant):kind::string AS response_type,
+                    parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp AS ingestion_time,
+                    ROW_NUMBER() OVER (PARTITION BY f.value:id::integer ORDER BY parse_json("raw_json"::variant):_pipeline_metadata:ingestion_timestamp::timestamp DESC) AS rn
+                FROM AIRFLOW_ETL.BRONZE.YOUTUBE_CATEGORIES_STREAM,
+                LATERAL FLATTEN(parse_json("raw_json"::variant):items) AS f
+            )
+            WHERE rn = 1
         ) AS src
         ON  tgt.category_id = src.category_id
-        AND tgt.region = src.region
-        AND tgt.ingestion_id = src.ingestion_id
         WHEN MATCHED THEN UPDATE SET
+            tgt.ingestion_id        = src.ingestion_id,
+            tgt.region              = src.region,
             tgt.category_etag       = src.category_etag,
             tgt.category_kind       = src.category_kind,
             tgt.category_title      = src.category_title,

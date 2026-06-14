@@ -30,7 +30,8 @@ default_args = {
     Pulls trending videos from the YouTube Data API for each configured region
     and writes raw JSON responses to PostgreSQL staging tables.
     
-    Bronze layer allows duplicates. Deduplication happens in Silver layer.
+    Bronze layer allows duplicates. Tables persist across runs (no drops).
+    Deduplication happens in Silver layer.
     
     Configuration via Airflow Variables:
     - YOUTUBE_API_KEY: Google API key with YouTube Data API v3 enabled
@@ -45,16 +46,16 @@ def youtube_bronze_layer_pipeline():
     """
     
     # ========================================================================
-    # TASK 1: Setup - Create Bronze Layer Tables (Staging - No Constraints)
+    # TASK 1: Setup - Create Bronze Layer Tables (Staging - Persistent)
     # ========================================================================
     @task(task_id='create_bronze_tables')
     def create_bronze_tables():
         """
         Create raw data tables in PostgreSQL for Bronze layer (Staging).
         
-        These tables allow duplicates for flexibility in data ingestion.
-        Deduplication will happen in the Silver layer.
-        No PRIMARY KEY or UNIQUE constraints.
+        Uses CREATE TABLE IF NOT EXISTS only - NO DROP statements.
+        Tables and data persist across all DAG runs.
+        No PRIMARY KEY or UNIQUE constraints - duplicates allowed.
         """
         try:
             postgres_conn_id = Variable.get('POSTGRES_CONN_ID', 'postgres_local')
@@ -63,98 +64,101 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
-            logger.info("Creating Bronze layer staging tables (no constraints)...")
+            logger.info("Ensuring Bronze layer staging tables exist (no drops)...")
             
             # ────────────────────────────────────────────────────────────────
-            # Table for raw trending videos data (NO PRIMARY KEY, NO UNIQUE)
+            # Table 1: Raw Trending Videos (no PK/unique - allows duplicates)
             # ────────────────────────────────────────────────────────────────
-            create_raw_videos_table = """
-            --DROP TABLE IF EXISTS youtube_bronze_trending_videos CASCADE;
-            
-            CREATE TABLE youtube_bronze_trending_videos (
-                ingestion_id VARCHAR(50) NOT NULL,
-                region VARCHAR(10) NOT NULL,
-                ingestion_timestamp TIMESTAMP NOT NULL,
-                raw_json JSONB NOT NULL,
-                video_count INT,
-                source VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE INDEX idx_region_timestamp 
-            ON youtube_bronze_trending_videos(region, ingestion_timestamp DESC);
-            CREATE INDEX idx_ingestion_id 
-            ON youtube_bronze_trending_videos(ingestion_id);
-            CREATE INDEX idx_created_at 
-            ON youtube_bronze_trending_videos(created_at DESC);
-            """
-            
-            cursor.execute(create_raw_videos_table)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS youtube_bronze_trending_videos (
+                    ingestion_id VARCHAR(50) NOT NULL,
+                    region VARCHAR(10) NOT NULL,
+                    ingestion_timestamp TIMESTAMP NOT NULL,
+                    raw_json JSONB NOT NULL,
+                    video_count INT,
+                    source VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_region_timestamp 
+                ON youtube_bronze_trending_videos(region, ingestion_timestamp DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ingestion_id 
+                ON youtube_bronze_trending_videos(ingestion_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_created_at 
+                ON youtube_bronze_trending_videos(created_at DESC);
+            """)
             conn.commit()
-            
-            logger.info("✓ Raw videos staging table created (allows duplicates)")
+            logger.info("✓ youtube_bronze_trending_videos ready (persists data)")
             
             # ────────────────────────────────────────────────────────────────
-            # Table for raw category reference data (NO PRIMARY KEY, NO UNIQUE)
+            # Table 2: Raw Categories (no PK/unique - allows duplicates)
             # ────────────────────────────────────────────────────────────────
-            create_categories_table = """
-            --DROP TABLE IF EXISTS youtube_bronze_categories CASCADE;
-            
-            CREATE TABLE youtube_bronze_categories (
-                ingestion_id VARCHAR(50) NOT NULL,
-                region VARCHAR(10) NOT NULL,
-                ingestion_timestamp TIMESTAMP NOT NULL,
-                raw_json JSONB NOT NULL,
-                source VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE INDEX idx_categories_region_timestamp 
-            ON youtube_bronze_categories(region, ingestion_timestamp DESC);
-            CREATE INDEX idx_categories_ingestion_id 
-            ON youtube_bronze_categories(ingestion_id);
-            CREATE INDEX idx_categories_created_at 
-            ON youtube_bronze_categories(created_at DESC);
-            """
-            
-            cursor.execute(create_categories_table)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS youtube_bronze_categories (
+                    ingestion_id VARCHAR(50) NOT NULL,
+                    region VARCHAR(10) NOT NULL,
+                    ingestion_timestamp TIMESTAMP NOT NULL,
+                    raw_json JSONB NOT NULL,
+                    source VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_categories_region_timestamp 
+                ON youtube_bronze_categories(region, ingestion_timestamp DESC);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_categories_ingestion_id 
+                ON youtube_bronze_categories(ingestion_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_categories_created_at 
+                ON youtube_bronze_categories(created_at DESC);
+            """)
             conn.commit()
-            
-            logger.info("✓ Categories staging table created (allows duplicates)")
+            logger.info("✓ youtube_bronze_categories ready (persists data)")
             
             # ────────────────────────────────────────────────────────────────
-            # Audit/metadata table
+            # Table 3: Audit Trail
             # ────────────────────────────────────────────────────────────────
-            create_audit_table = """
-            --DROP TABLE IF EXISTS youtube_ingestion_audit CASCADE;
-            
-            CREATE TABLE youtube_ingestion_audit (
-                id SERIAL PRIMARY KEY,
-                ingestion_id VARCHAR(50) NOT NULL,
-                started_at TIMESTAMP NOT NULL,
-                completed_at TIMESTAMP,
-                total_regions INT,
-                success_count INT,
-                failed_count INT,
-                status VARCHAR(50),
-                error_details JSONB,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE INDEX idx_audit_ingestion_id 
-            ON youtube_ingestion_audit(ingestion_id);
-            CREATE INDEX idx_audit_status 
-            ON youtube_ingestion_audit(status);
-            CREATE INDEX idx_audit_created_at 
-            ON youtube_ingestion_audit(created_at DESC);
-            """
-            
-            cursor.execute(create_audit_table)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS youtube_ingestion_audit (
+                    id SERIAL PRIMARY KEY,
+                    ingestion_id VARCHAR(50) NOT NULL,
+                    started_at TIMESTAMP NOT NULL,
+                    completed_at TIMESTAMP,
+                    total_regions INT,
+                    success_count INT,
+                    failed_count INT,
+                    status VARCHAR(50),
+                    error_details JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_ingestion_id 
+                ON youtube_ingestion_audit(ingestion_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_status 
+                ON youtube_ingestion_audit(status);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_created_at 
+                ON youtube_ingestion_audit(created_at DESC);
+            """)
             conn.commit()
+            logger.info("✓ youtube_ingestion_audit ready (persists data)")
             
-            logger.info("✓ Audit table created/verified")
             cursor.close()
             conn.close()
+            
+            logger.info("✓ All staging tables verified - no data dropped")
             
             return {'status': 'success', 'tables_created': True}
         
@@ -336,7 +340,7 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
-            # ✅ SIMPLE INSERT - NO ON CONFLICT
+            # Simple INSERT - NO ON CONFLICT
             insert_sql = """
             INSERT INTO youtube_bronze_trending_videos 
             (ingestion_id, region, ingestion_timestamp, raw_json, video_count, source)
@@ -396,7 +400,7 @@ def youtube_bronze_layer_pipeline():
             conn = postgres_hook.get_conn()
             cursor = conn.cursor()
             
-            # ✅ SIMPLE INSERT - NO ON CONFLICT
+            # Simple INSERT - NO ON CONFLICT
             insert_sql = """
             INSERT INTO youtube_bronze_categories 
             (ingestion_id, region, ingestion_timestamp, raw_json, source)
